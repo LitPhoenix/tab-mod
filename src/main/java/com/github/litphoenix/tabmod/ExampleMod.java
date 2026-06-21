@@ -16,7 +16,6 @@ public class ExampleMod {
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
-        // Registers our event so Minecraft actually listens to it
         MinecraftForge.EVENT_BUS.register(this);
     }
 
@@ -31,11 +30,12 @@ public class ExampleMod {
                 if (player.getDisplayName() != null) {
                     String text = player.getDisplayName().getFormattedText();
                     
-                    if (text.contains("§kXXXX")) {
-                        text = text.replace("§kXXXX", "XXXX");
+                    // \u00A7 is the safe way to write the section sign (§)
+                    if (text.contains("\u00A7kXXXX")) {
+                        text = text.replace("\u00A7kXXXX", "XXXX");
                     }
-                    if (text.contains("§k")) {
-                        text = text.replace("§k", "");
+                    if (text.contains("\u00A7k")) {
+                        text = text.replace("\u00A7k", "");
                     }
                     
                     setPlayerDisplayName(player, text);
