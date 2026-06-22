@@ -23,6 +23,7 @@ import java.net.URL;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CompletableFuture;
 
 @Mod(modid = "tabmod", version = "1.0", acceptedMinecraftVersions = "[1.8.9]")
 public class ExampleMod {
@@ -31,12 +32,14 @@ public class ExampleMod {
 
     private static final Map<UUID, Map<String, String>> wlrCache = new ConcurrentHashMap<>();
     private static final Set<UUID> failedCache = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    public static final Map<String, UUID> nickMap = new ConcurrentHashMap<>();
     private static final ConcurrentLinkedQueue<UUID> fetchQueue = new ConcurrentLinkedQueue<>();
     
     private static String apiKey = "";
     private static File configDir;
     private static File keyFile;
     private static File cacheFile;
+    private static File nicksFile;
 
     private static String currentGame = null;
     private static long lastGameCheck = 0;
@@ -51,9 +54,11 @@ public class ExampleMod {
         
         keyFile = new File(configDir, "tabmod_key.txt");
         cacheFile = new File(configDir, "tabmod_cache.json");
+        nicksFile = new File(configDir, "tabmod_nicks.json");
         
         loadApiKey();
         loadCache();
+        loadNicks();
         startBackgroundWorker();
     }
 
@@ -62,7 +67,7 @@ public class ExampleMod {
             while (true) {
                 try {
                     UUID target = fetchQueue.poll();
-                    if (target != null && !apiKey.isEmpty() && !wlrCache.containsKey(target)) {
+                    if (target != null && !apiKey.isEmpty() && !wlrCache.containsKey(target) && !failedCache.contains(target)) {
                         fetchFromAPI(target);
                         Thread.sleep(600); 
                     } else {
@@ -89,7 +94,9 @@ public class ExampleMod {
         
         for (NetworkPlayerInfo player : mc.getNetHandler().getPlayerInfoMap()) {
             if (player.getGameProfile() != null) {
-                queueFetch(player.getGameProfile().getId());
+                String rawName = player.getGameProfile().getName().toLowerCase();
+                UUID targetUuid = nickMap.containsKey(rawName) ? nickMap.get(rawName) : player.getGameProfile().getId();
+                queueFetch(targetUuid);
             }
         }
     }
@@ -97,10 +104,12 @@ public class ExampleMod {
     public static String getWlrTag(UUID uuid) {
         String game = detectGameCached();
         if (game == null) return null;
-        if (wlrCache.containsKey(uuid)) {
-            return wlrCache.get(uuid).get(game);
-        }
+        if (wlrCache.containsKey(uuid)) return wlrCache.get(uuid).get(game);
         return null;
+    }
+    
+    public static boolean isFailed(UUID uuid) {
+        return failedCache.contains(uuid);
     }
 
     public static String detectGameCached() {
@@ -155,28 +164,27 @@ public class ExampleMod {
                 JsonObject json = new JsonParser().parse(response.toString()).getAsJsonObject();
                 if (json.has("success") && json.get("success").getAsBoolean() && json.has("player") && !json.get("player").isJsonNull()) {
                     JsonObject playerObj = json.getAsJsonObject("player");
-                    if (playerObj.has("stats")) {
-                        JsonObject stats = playerObj.getAsJsonObject("stats");
-                        Map<String, String> playerStats = new ConcurrentHashMap<>();
+                    JsonObject stats = playerObj.has("stats") ? playerObj.getAsJsonObject("stats") : new JsonObject();
+                    Map<String, String> playerStats = new ConcurrentHashMap<>();
 
-                        parseGameStat(stats, playerStats, "HungerGames", "wins", "deaths");
-                        parseGameStat(stats, playerStats, "Bedwars", "wins_bedwars", "losses_bedwars");
-                        parseGameStat(stats, playerStats, "SkyWars", "wins", "losses");
-                        parseGameStat(stats, playerStats, "BuildBattle", "wins", "games_played");
-                        parseGameStat(stats, playerStats, "MCGO", "game_wins", "deaths");
-                        parseGameStat(stats, playerStats, "UHC", "wins", "deaths");
-                        parseGameStat(stats, playerStats, "Battleground", "wins", "losses");
-                        parseGameStat(stats, playerStats, "Walls", "wins", "losses");
-                        parseGameStat(stats, playerStats, "Quake", "wins", "deaths");
-                        parseGameStat(stats, playerStats, "Arena", "wins", "losses");
+                    // Parse all games. The parser will assign [---] if they lack stats, preventing infinite retries.
+                    parseGameStat(stats, playerStats, "HungerGames", "wins", "deaths");
+                    parseGameStat(stats, playerStats, "Bedwars", "wins_bedwars", "losses_bedwars");
+                    parseGameStat(stats, playerStats, "SkyWars", "wins", "losses");
+                    parseGameStat(stats, playerStats, "BuildBattle", "wins", "games_played");
+                    parseGameStat(stats, playerStats, "MCGO", "game_wins", "deaths");
+                    parseGameStat(stats, playerStats, "UHC", "wins", "deaths");
+                    parseGameStat(stats, playerStats, "Battleground", "wins", "losses");
+                    parseGameStat(stats, playerStats, "Walls", "wins", "losses");
+                    parseGameStat(stats, playerStats, "Quake", "wins", "deaths");
+                    parseGameStat(stats, playerStats, "Arena", "wins", "losses");
 
-                        wlrCache.put(uuid, playerStats);
-                    }
+                    wlrCache.put(uuid, playerStats);
                 } else {
-                    failedCache.add(uuid); 
+                    failedCache.add(uuid); // Nicked or wiped
                 }
             } else if (conn.getResponseCode() == 429) {
-                fetchQueue.add(uuid);
+                fetchQueue.add(uuid); // Re-queue if rate limited
                 Thread.sleep(5000); 
             } else {
                 failedCache.add(uuid);
@@ -193,27 +201,48 @@ public class ExampleMod {
     }
 
     private static void parseGameStat(JsonObject stats, Map<String, String> playerStats, String game, String winKey, String lossKey) {
-        if (!stats.has(game)) return;
-        JsonObject gameObj = stats.getAsJsonObject(game);
+        int wins = 0;
+        int losses = 0;
 
-        int wins = gameObj.has(winKey) ? gameObj.get(winKey).getAsInt() : 0;
-        int losses = gameObj.has(lossKey) ? gameObj.get(lossKey).getAsInt() : 0;
-
-        if (game.equals("BuildBattle")) {
-            losses = Math.max(0, losses - wins);
+        if (stats.has(game)) {
+            JsonObject gameObj = stats.getAsJsonObject(game);
+            wins = gameObj.has(winKey) ? gameObj.get(winKey).getAsInt() : 0;
+            losses = gameObj.has(lossKey) ? gameObj.get(lossKey).getAsInt() : 0;
+            if (game.equals("BuildBattle")) losses = Math.max(0, losses - wins);
         }
 
         if (wins >= 10) {
             double wlr = (losses == 0) ? wins : (double) wins / losses;
             
-            String colour = "\u00A77"; 
-            if (wlr >= 4.0) colour = "\u00A74";      
-            else if (wlr >= 2.0) colour = "\u00A7c"; 
-            else if (wlr >= 1.0) colour = "\u00A76"; 
-            else if (wlr >= 0.5) colour = "\u00A7e"; 
+            // BRACKET COLOR (Experience / Total Wins)
+            String bColor = "\u00A78"; // Dark Grey (<100)
+            if (wins >= 5000) bColor = "\u00A74";      // Dark Red
+            else if (wins >= 2500) bColor = "\u00A7c"; // Red
+            else if (wins >= 1000) bColor = "\u00A76"; // Gold
+            else if (wins >= 500) bColor = "\u00A7e";  // Yellow
+            else if (wins >= 100) bColor = "\u00A77";  // Light Grey
+
+            // NUMBER COLOR (Skill / WLR)
+            String nColor = "\u00A77"; 
+            if (game.equals("Battleground")) {
+                // Specific Warlords Rules
+                if (wlr >= 2.0) nColor = "\u00A74";      // Extreme
+                else if (wlr >= 1.5) nColor = "\u00A7c"; // Sweat
+                else if (wlr >= 1.25) nColor = "\u00A76"; // Good
+                else if (wlr >= 0.95) nColor = "\u00A7e"; // Decent
+            } else {
+                // Standard Rules
+                if (wlr >= 2.0) nColor = "\u00A74";      
+                else if (wlr >= 0.8) nColor = "\u00A7c"; 
+                else if (wlr >= 0.5) nColor = "\u00A76"; 
+                else if (wlr >= 0.3) nColor = "\u00A7e"; 
+            }
 
             String formattedWlr = String.format(Locale.UK, "%.2f", wlr);
-            playerStats.put(game, colour + "[" + formattedWlr + "]\u00A7f");
+            playerStats.put(game, bColor + "[" + nColor + formattedWlr + bColor + "]\u00A7f");
+        } else {
+            // Under 10 wins. Stored in cache to prevent endless API re-checks.
+            playerStats.put(game, "\u00A78[---]\u00A7f");
         }
     }
 
@@ -245,13 +274,28 @@ public class ExampleMod {
             if (loaded != null) wlrCache.putAll(loaded);
         } catch (IOException e) { }
     }
+    
+    public static synchronized void saveNicks() {
+        Map<String, UUID> clone = new HashMap<>(nickMap);
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(nicksFile))) {
+            new Gson().toJson(clone, writer);
+        } catch (IOException e) { }
+    }
+
+    private static void loadNicks() {
+        if (!nicksFile.exists()) return;
+        try (BufferedReader reader = new BufferedReader(new FileReader(nicksFile))) {
+            Map<String, UUID> loaded = new Gson().fromJson(reader, new TypeToken<Map<String, UUID>>(){}.getType());
+            if (loaded != null) nickMap.putAll(loaded);
+        } catch (IOException e) { }
+    }
 
     private static class CommandWLR extends CommandBase {
         @Override
         public String getCommandName() { return "wlr"; }
         
         @Override
-        public String getCommandUsage(ICommandSender sender) { return "/wlr | /wlr toggle | /wlr key <api_key>"; }
+        public String getCommandUsage(ICommandSender sender) { return "/wlr | /wlr toggle | /wlr key <api_key> | /wlr nick <fake> <real>"; }
         
         @Override
         public int getRequiredPermissionLevel() { return 0; }
@@ -262,6 +306,33 @@ public class ExampleMod {
                 apiKey = args[1].trim();
                 saveApiKey(apiKey);
                 sender.addChatMessage(new ChatComponentText("\u00A7aHypixel API key saved! TabMod is ready."));
+                return;
+            }
+            
+            if (args.length >= 3 && args[0].equalsIgnoreCase("nick")) {
+                String fakeName = args[1];
+                String realName = args[2];
+                sender.addChatMessage(new ChatComponentText("\u00A7eResolving real UUID for " + realName + "..."));
+                
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        URL url = new URL("https://api.mojang.com/users/profiles/minecraft/" + realName);
+                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                        if (conn.getResponseCode() == 200) {
+                            BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                            JsonObject json = new JsonParser().parse(in.readLine()).getAsJsonObject();
+                            String rawId = json.get("id").getAsString();
+                            UUID realUuid = UUID.fromString(rawId.replaceFirst("(\\p{XDigit}{8})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}+)", "$1-$2-$3-$4-$5"));
+                            nickMap.put(fakeName.toLowerCase(), realUuid);
+                            saveNicks();
+                            sender.addChatMessage(new ChatComponentText("\u00A7aSuccess! Nick " + fakeName + " is now linked to " + realName));
+                        } else {
+                            sender.addChatMessage(new ChatComponentText("\u00A7cCould not find real player: " + realName));
+                        }
+                    } catch(Exception e) {
+                        sender.addChatMessage(new ChatComponentText("\u00A7cError mapping nick via Mojang API."));
+                    }
+                });
                 return;
             }
             
@@ -277,18 +348,16 @@ public class ExampleMod {
                     sender.addChatMessage(new ChatComponentText("\u00A7cNo API key set. Use /wlr key <key>"));
                     return;
                 }
-                
                 if (!isModEnabled) {
                     sender.addChatMessage(new ChatComponentText("\u00A7cMod is currently disabled. Use /wlr toggle first."));
                     return;
                 }
-
                 sender.addChatMessage(new ChatComponentText("\u00A7aQueueing stats for current tab list..."));
                 queueCurrentTabList();
                 return;
             }
 
-            sender.addChatMessage(new ChatComponentText("\u00A7cUsage: /wlr | /wlr toggle | /wlr key <key>"));
+            sender.addChatMessage(new ChatComponentText("\u00A7cUsage: /wlr | /wlr toggle | /wlr key <key> | /wlr nick <fake> <real>"));
         }
     }
 }
