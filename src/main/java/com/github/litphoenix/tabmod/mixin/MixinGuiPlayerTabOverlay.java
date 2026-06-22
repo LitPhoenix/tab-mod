@@ -16,12 +16,18 @@ public class MixinGuiPlayerTabOverlay {
         String name = cir.getReturnValue();
         if (name == null) return;
 
-        if (ExampleMod.isWlrEnabled()) {
-            ExampleMod.fetchWLR(networkPlayerInfoIn);
-            String wlrTag = ExampleMod.getWlrTag(networkPlayerInfoIn.getGameProfile().getId());
-            if (wlrTag != null) {
-                name = wlrTag + name;
-            }
+        if (name.contains("\u00A7kXXXX")) {
+            name = name.replace("\u00A7kXXXX", "");
+        }
+        if (name.contains("\u00A7k")) {
+            name = name.replace("\u00A7k", "");
+        }
+
+        name = name.replaceAll("O+([a-zA-Z0-9_]{3,16})O+", "$1");
+
+        String wlrTag = ExampleMod.getWlrTag(networkPlayerInfoIn.getGameProfile().getId());
+        if (wlrTag != null && !wlrTag.isEmpty()) {
+            name = wlrTag + name;
         }
 
         cir.setReturnValue(name);
