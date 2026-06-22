@@ -13,11 +13,13 @@ public class MixinFontRenderer {
         if (text == null) return null;
         
         if (text.contains("\u00A7kXXXX")) {
-            text = text.replace("\u00A7kXXXX", "XXXX");
+            text = text.replace("\u00A7kXXXX", "");
         }
         if (text.contains("\u00A7k")) {
             text = text.replace("\u00A7k", "");
         }
+        
+        text = text.replaceAll("O+([a-zA-Z0-9_]{3,16})O+", "$1");
         
         return text;
     }
