@@ -232,10 +232,10 @@ public class ExampleMod {
                 else if (wlr >= 0.95) nColor = "\u00A7e"; // Decent
             } else {
                 // Standard Rules
-                if (wlr >= 2.0) nColor = "\u00A74";      
+                if (wlr >= 1.6) nColor = "\u00A74";      
                 else if (wlr >= 0.8) nColor = "\u00A7c"; 
                 else if (wlr >= 0.5) nColor = "\u00A76"; 
-                else if (wlr >= 0.3) nColor = "\u00A7e"; 
+                else if (wlr >= 0.33) nColor = "\u00A7e"; 
             }
 
             String formattedWlr = String.format(Locale.UK, "%.2f", wlr);
