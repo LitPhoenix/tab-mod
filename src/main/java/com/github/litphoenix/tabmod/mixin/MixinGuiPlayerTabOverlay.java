@@ -22,13 +22,27 @@ public class MixinGuiPlayerTabOverlay {
         if (name.contains("\u00A7k")) name = name.replace("\u00A7k", "");
         name = name.replaceAll("O+([a-zA-Z0-9_]{3,16})O+", "$1");
 
-        // 2. Only inject WLR tags if the mod is toggled ON
+        // 2. Process and inject tags if mod is active
         if (ExampleMod.isModEnabled) {
-            UUID playerUuid = networkPlayerInfoIn.getGameProfile().getId();
+            String rawName = networkPlayerInfoIn.getGameProfile().getName().toLowerCase();
+            
+            // Use real UUID if user has mapped this nickname, otherwise use default
+            UUID playerUuid = ExampleMod.nickMap.containsKey(rawName) 
+                ? ExampleMod.nickMap.get(rawName) 
+                : networkPlayerInfoIn.getGameProfile().getId();
+
             String wlrTag = ExampleMod.getWlrTag(playerUuid);
 
             if (wlrTag != null) {
+                // Success or Under 10 wins (from cache)
                 name = wlrTag + " " + name;
+            } else if (ExampleMod.isFailed(playerUuid)) {
+                // API check failed or player is nicked (Not in local mapping)
+                name = "\u00A78[\u00A7c?\u00A78]\u00A7f " + name;
+            } else {
+                // Data is queued to be fetched
+                name = "\u00A78[...]\u00A7f " + name;
+                ExampleMod.queueFetch(playerUuid);
             }
         }
 
