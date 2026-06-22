@@ -4,7 +4,8 @@
   "package": "com.github.litphoenix.tabmod.mixin",
   "compatibilityLevel": "JAVA_8",
   "mixins": [
-    "MixinGuiPlayerTabOverlay"
+    "MixinGuiPlayerTabOverlay",
+    "MixinFontRenderer"
   ],
   "client": [],
   "injectors": {
