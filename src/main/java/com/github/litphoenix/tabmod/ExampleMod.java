@@ -314,4 +314,88 @@ public class ExampleMod {
         public String getCommandName() { return "wlr"; }
         
         @Override
-        public String getCommandUsage(ICommandSender sender) { return "/wlr | /wlr toggle | /wlr key <api_key> | /wlr nick <fake> <real> | /
+        public String getCommandUsage(ICommandSender sender) { return "/wlr | /wlr toggle | /wlr key <api_key> | /wlr nick <fake> <real> | /wlr config"; }
+        
+        @Override
+        public int getRequiredPermissionLevel() { return 0; }
+
+        @Override
+        public void processCommand(ICommandSender sender, String[] args) throws CommandException {
+            if (args.length >= 2 && args[0].equalsIgnoreCase("key")) {
+                apiKey = args[1].trim();
+                saveApiKey(apiKey);
+                sender.addChatMessage(new ChatComponentText("\u00A7aHypixel API key saved! TabMod is ready."));
+                return;
+            }
+            
+            if (args.length >= 3 && args[0].equalsIgnoreCase("nick")) {
+                String fakeName = args[1];
+                String realName = args[2];
+                sender.addChatMessage(new ChatComponentText("\u00A7eResolving real UUID for " + realName + "..."));
+                
+                CompletableFuture.runAsync(() -> {
+                    try {
+                        URL url = new URL("https://api.mojang.com/users/profiles/minecraft/" + realName);
+                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                        if (conn.getResponseCode() == 200) {
+                            InputStreamReader reader = new InputStreamReader(conn.getInputStream());
+                            JsonObject json = new JsonParser().parse(reader).getAsJsonObject();
+                            reader.close();
+                            
+                            String rawId = json.get("id").getAsString();
+                            StringBuilder sb = new StringBuilder(rawId);
+                            sb.insert(8, "-").insert(13, "-").insert(18, "-").insert(23, "-");
+                            UUID realUuid = UUID.fromString(sb.toString());
+                            
+                            nickMap.put(fakeName.toLowerCase(), realUuid);
+                            saveNicks();
+                            
+                            Minecraft.getMinecraft().addScheduledTask(() -> {
+                                sender.addChatMessage(new ChatComponentText("\u00A7aSuccess! Nick " + fakeName + " is now linked to " + realName));
+                            });
+                        } else {
+                            Minecraft.getMinecraft().addScheduledTask(() -> {
+                                sender.addChatMessage(new ChatComponentText("\u00A7cCould not find real player: " + realName));
+                            });
+                        }
+                    } catch(Exception e) {
+                        Minecraft.getMinecraft().addScheduledTask(() -> {
+                            sender.addChatMessage(new ChatComponentText("\u00A7cError mapping nick via Mojang API."));
+                        });
+                    }
+                });
+                return;
+            }
+            
+            if (args.length >= 1 && args[0].equalsIgnoreCase("toggle")) {
+                isModEnabled = !isModEnabled;
+                String state = isModEnabled ? "\u00A7aENABLED" : "\u00A7cDISABLED";
+                sender.addChatMessage(new ChatComponentText("\u00A7eTabMod is now " + state));
+                return;
+            }
+
+            if (args.length >= 1 && args[0].equalsIgnoreCase("config")) {
+                Minecraft.getMinecraft().addScheduledTask(() -> {
+                    Minecraft.getMinecraft().displayGuiScreen(new GuiConfig());
+                });
+                return;
+            }
+
+            if (args.length == 0 || args[0].equalsIgnoreCase("run")) {
+                if (apiKey.isEmpty()) {
+                    sender.addChatMessage(new ChatComponentText("\u00A7cNo API key set. Use /wlr key <key>"));
+                    return;
+                }
+                if (!isModEnabled) {
+                    sender.addChatMessage(new ChatComponentText("\u00A7cMod is currently disabled. Use /wlr toggle first."));
+                    return;
+                }
+                sender.addChatMessage(new ChatComponentText("\u00A7aQueueing stats for current tab list..."));
+                queueCurrentTabList();
+                return;
+            }
+
+            sender.addChatMessage(new ChatComponentText("\u00A7cUsage: /wlr | /wlr toggle | /wlr key <key> | /wlr nick <fake> <real> | /wlr config"));
+        }
+    }
+}
