@@ -13,6 +13,7 @@ import net.minecraftforge.client.ClientCommandHandler;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
@@ -40,14 +41,29 @@ public class ExampleMod {
     private static File keyFile;
     private static File cacheFile;
     private static File nicksFile;
-    private static File thresholdFile;
+    private static File gamesFile;
 
     private static String currentGame = null;
     private static long lastGameCheck = 0;
     private static int fetchCountSinceSave = 0;
 
-    // Threshold configurations (Game name -> [Sweat Threshold, Extreme Threshold])
-    public static final Map<String, double[]> thresholds = new ConcurrentHashMap<>();
+    public static final Map<String, GameProfile> gameProfiles = new ConcurrentHashMap<>();
+
+    public static class GameProfile {
+        public boolean enabled = true;
+        public String stat1 = "wins";
+        public String stat2 = "losses";
+        public String prefix = "[";
+        public String suffix = "]";
+        public int decimals = 2;
+        public double swt = 0.8;
+        public double ext = 1.6;
+
+        public GameProfile() {}
+        public GameProfile(String s1, String s2, double swt, double ext) {
+            this.stat1 = s1; this.stat2 = s2; this.swt = swt; this.ext = ext;
+        }
+    }
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
@@ -59,27 +75,27 @@ public class ExampleMod {
         keyFile = new File(configDir, "tabmod_key.txt");
         cacheFile = new File(configDir, "tabmod_cache.json");
         nicksFile = new File(configDir, "tabmod_nicks.json");
-        thresholdFile = new File(configDir, "tabmod_thresholds.json");
+        gamesFile = new File(configDir, "tabmod_games.json");
         
-        initDefaultThresholds();
+        initDefaultProfiles();
         loadApiKey();
         loadCache();
         loadNicks();
-        loadThresholds();
+        loadProfiles();
         startBackgroundWorker();
     }
 
-    private void initDefaultThresholds() {
-        thresholds.put("HungerGames", new double[]{0.8, 1.6});
-        thresholds.put("Bedwars", new double[]{0.8, 1.6});
-        thresholds.put("SkyWars", new double[]{0.8, 1.6});
-        thresholds.put("BuildBattle", new double[]{0.8, 1.6});
-        thresholds.put("MCGO", new double[]{0.8, 1.6});
-        thresholds.put("UHC", new double[]{0.8, 1.6});
-        thresholds.put("Battleground", new double[]{1.5, 2.0});
-        thresholds.put("Walls", new double[]{0.8, 1.6});
-        thresholds.put("Quake", new double[]{0.8, 1.6});
-        thresholds.put("Arena", new double[]{0.8, 1.6});
+    private void initDefaultProfiles() {
+        gameProfiles.put("HungerGames", new GameProfile("wins", "deaths", 0.8, 1.6));
+        gameProfiles.put("Bedwars", new GameProfile("wins_bedwars", "losses_bedwars", 0.8, 1.6));
+        gameProfiles.put("SkyWars", new GameProfile("wins", "losses", 0.8, 1.6));
+        gameProfiles.put("BuildBattle", new GameProfile("wins", "games_played", 0.8, 1.6));
+        gameProfiles.put("MCGO", new GameProfile("game_wins", "deaths", 0.8, 1.6));
+        gameProfiles.put("UHC", new GameProfile("wins", "deaths", 0.8, 1.6));
+        gameProfiles.put("Battleground", new GameProfile("wins", "losses", 1.5, 2.0));
+        gameProfiles.put("Walls", new GameProfile("wins", "losses", 0.8, 1.6));
+        gameProfiles.put("Quake", new GameProfile("wins", "deaths", 0.8, 1.6));
+        gameProfiles.put("Arena", new GameProfile("wins", "losses", 0.8, 1.6));
     }
 
     private void startBackgroundWorker() {
@@ -124,6 +140,10 @@ public class ExampleMod {
     public static String getWlrTag(UUID uuid) {
         String game = detectGameCached();
         if (game == null) return null;
+        
+        GameProfile profile = gameProfiles.get(game);
+        if (profile == null || !profile.enabled) return null;
+
         if (wlrCache.containsKey(uuid)) return wlrCache.get(uuid).get(game);
         return null;
     }
@@ -150,16 +170,18 @@ public class ExampleMod {
         if (obj == null) return null;
 
         String title = EnumChatFormatting.getTextWithoutFormattingCodes(obj.getDisplayName()).toUpperCase();
+        for (String game : gameProfiles.keySet()) {
+            if (title.contains(game.toUpperCase())) return game;
+        }
+        
         if (title.contains("BLITZ") || title.contains("SG")) return "HungerGames";
-        if (title.contains("BED WARS") || title.contains("BEDWARS")) return "Bedwars";
-        if (title.contains("SKYWARS") || title.contains("SKY WARS")) return "SkyWars";
-        if (title.contains("BUILD BATTLE")) return "BuildBattle";
+        if (title.contains("BED WARS")) return "Bedwars";
+        if (title.contains("SKY WARS")) return "SkyWars";
         if (title.contains("COPS AND CRIMS") || title.contains("CVSC")) return "MCGO";
-        if (title.contains("UHC")) return "UHC";
         if (title.contains("WARLORDS")) return "Battleground";
-        if (title.contains("THE WALLS") || title.contains("WALLS")) return "Walls";
-        if (title.contains("QUAKECRAFT") || title.contains("QUAKE")) return "Quake";
-        if (title.contains("ARENA BRAWL") || title.contains("ARENA")) return "Arena";
+        if (title.contains("THE WALLS")) return "Walls";
+        if (title.contains("QUAKECRAFT")) return "Quake";
+        if (title.contains("ARENA BRAWL")) return "Arena";
         return null;
     }
 
@@ -184,16 +206,9 @@ public class ExampleMod {
                     JsonObject stats = playerObj.has("stats") ? playerObj.getAsJsonObject("stats") : new JsonObject();
                     Map<String, String> playerStats = new ConcurrentHashMap<>();
 
-                    parseGameStat(stats, playerStats, "HungerGames", "wins", "deaths");
-                    parseGameStat(stats, playerStats, "Bedwars", "wins_bedwars", "losses_bedwars");
-                    parseGameStat(stats, playerStats, "SkyWars", "wins", "losses");
-                    parseGameStat(stats, playerStats, "BuildBattle", "wins", "games_played");
-                    parseGameStat(stats, playerStats, "MCGO", "game_wins", "deaths");
-                    parseGameStat(stats, playerStats, "UHC", "wins", "deaths");
-                    parseGameStat(stats, playerStats, "Battleground", "wins", "losses");
-                    parseGameStat(stats, playerStats, "Walls", "wins", "losses");
-                    parseGameStat(stats, playerStats, "Quake", "wins", "deaths");
-                    parseGameStat(stats, playerStats, "Arena", "wins", "losses");
+                    for (Map.Entry<String, GameProfile> entry : gameProfiles.entrySet()) {
+                        parseDynamicStat(stats, playerStats, entry.getKey(), entry.getValue());
+                    }
 
                     wlrCache.put(uuid, playerStats);
                 } else {
@@ -216,38 +231,46 @@ public class ExampleMod {
         }
     }
 
-    private static void parseGameStat(JsonObject stats, Map<String, String> playerStats, String game, String winKey, String lossKey) {
-        int wins = 0;
-        int losses = 0;
+    private static void parseDynamicStat(JsonObject stats, Map<String, String> playerStats, String gameName, GameProfile profile) {
+        int v1 = 0;
+        int v2 = 0;
 
-        if (stats.has(game)) {
-            JsonObject gameObj = stats.getAsJsonObject(game);
-            wins = gameObj.has(winKey) ? gameObj.get(winKey).getAsInt() : 0;
-            losses = gameObj.has(lossKey) ? gameObj.get(lossKey).getAsInt() : 0;
-            if (game.equals("BuildBattle")) losses = Math.max(0, losses - wins);
+        if (stats.has(gameName)) {
+            JsonObject gameObj = stats.getAsJsonObject(gameName);
+            v1 = gameObj.has(profile.stat1) ? gameObj.get(profile.stat1).getAsInt() : 0;
+            v2 = gameObj.has(profile.stat2) ? gameObj.get(profile.stat2).getAsInt() : 0;
+            if (gameName.equals("BuildBattle") && profile.stat2.equals("games_played")) {
+                v2 = Math.max(0, v2 - v1);
+            }
         }
 
-        if (wins >= 10) {
-            double wlr = (losses == 0) ? wins : (double) wins / losses;
+        if (v1 >= 10) {
+            double ratio = (v2 == 0) ? v1 : (double) v1 / v2;
             
             String bColor = "\u00A78"; 
-            if (wins >= 5000) bColor = "\u00A74";      
-            else if (wins >= 2500) bColor = "\u00A7c"; 
-            else if (wins >= 1000) bColor = "\u00A76"; 
-            else if (wins >= 500) bColor = "\u00A7e";  
-            else if (wins >= 100) bColor = "\u00A77";  
+            if (v1 >= 5000) bColor = "\u00A74";      
+            else if (v1 >= 2500) bColor = "\u00A7c"; 
+            else if (v1 >= 1000) bColor = "\u00A76"; 
+            else if (v1 >= 500) bColor = "\u00A7e";  
+            else if (v1 >= 100) bColor = "\u00A77";  
 
-            double[] limits = thresholds.getOrDefault(game, new double[]{0.8, 1.6});
             String nColor = "\u00A77"; 
-            if (wlr >= limits[1]) nColor = "\u00A74";       
-            else if (wlr >= limits[0]) nColor = "\u00A7c";  
-            else if (wlr >= limits[0] * 0.8) nColor = "\u00A76"; 
-            else if (wlr >= limits[0] * 0.5) nColor = "\u00A7e"; 
+            if (ratio >= profile.ext) nColor = "\u00A74";       
+            else if (ratio >= profile.swt) nColor = "\u00A7c";  
+            else if (ratio >= profile.swt * 0.8) nColor = "\u00A76"; 
+            else if (ratio >= profile.swt * 0.5) nColor = "\u00A7e"; 
 
-            String formattedWlr = String.format(Locale.UK, "%.2f", wlr);
-            playerStats.put(game, bColor + "[" + nColor + formattedWlr + bColor + "]\u00A7f");
+            String formatStr = "%." + Math.max(0, profile.decimals) + "f";
+            String formattedRatio = String.format(Locale.UK, formatStr, ratio);
+            
+            String pre = profile.prefix != null ? profile.prefix : "";
+            String suf = profile.suffix != null ? profile.suffix : "";
+            
+            playerStats.put(gameName, bColor + pre + nColor + formattedRatio + bColor + suf + "\u00A7f");
         } else {
-            playerStats.put(game, "\u00A78[---]\u00A7f");
+            String pre = profile.prefix != null ? profile.prefix : "";
+            String suf = profile.suffix != null ? profile.suffix : "";
+            playerStats.put(gameName, "\u00A78" + pre + "---" + suf + "\u00A7f");
         }
     }
 
@@ -295,17 +318,17 @@ public class ExampleMod {
         } catch (IOException e) { }
     }
 
-    public static synchronized void saveThresholds() {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(thresholdFile))) {
-            new Gson().toJson(thresholds, writer);
+    public static synchronized void saveProfiles() {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(gamesFile))) {
+            new GsonBuilder().setPrettyPrinting().create().toJson(gameProfiles, writer);
         } catch (IOException e) { }
     }
 
-    private static void loadThresholds() {
-        if (!thresholdFile.exists()) return;
-        try (BufferedReader reader = new BufferedReader(new FileReader(thresholdFile))) {
-            Map<String, double[]> loaded = new Gson().fromJson(reader, new TypeToken<Map<String, double[]>>(){}.getType());
-            if (loaded != null) thresholds.putAll(loaded);
+    private static void loadProfiles() {
+        if (!gamesFile.exists()) return;
+        try (BufferedReader reader = new BufferedReader(new FileReader(gamesFile))) {
+            Map<String, GameProfile> loaded = new Gson().fromJson(reader, new TypeToken<Map<String, GameProfile>>(){}.getType());
+            if (loaded != null) gameProfiles.putAll(loaded);
         } catch (IOException e) { }
     }
 
@@ -324,15 +347,13 @@ public class ExampleMod {
             if (args.length >= 2 && args[0].equalsIgnoreCase("key")) {
                 apiKey = args[1].trim();
                 saveApiKey(apiKey);
-                sender.addChatMessage(new ChatComponentText("\u00A7aHypixel API key saved! TabMod is ready."));
+                sender.addChatMessage(new ChatComponentText("\u00A7aHypixel API key saved!"));
                 return;
             }
-            
             if (args.length >= 3 && args[0].equalsIgnoreCase("nick")) {
                 String fakeName = args[1];
                 String realName = args[2];
                 sender.addChatMessage(new ChatComponentText("\u00A7eResolving real UUID for " + realName + "..."));
-                
                 CompletableFuture.runAsync(() -> {
                     try {
                         URL url = new URL("https://api.mojang.com/users/profiles/minecraft/" + realName);
@@ -341,61 +362,40 @@ public class ExampleMod {
                             InputStreamReader reader = new InputStreamReader(conn.getInputStream());
                             JsonObject json = new JsonParser().parse(reader).getAsJsonObject();
                             reader.close();
-                            
                             String rawId = json.get("id").getAsString();
                             StringBuilder sb = new StringBuilder(rawId);
                             sb.insert(8, "-").insert(13, "-").insert(18, "-").insert(23, "-");
-                            UUID realUuid = UUID.fromString(sb.toString());
-                            
-                            nickMap.put(fakeName.toLowerCase(), realUuid);
+                            nickMap.put(fakeName.toLowerCase(), UUID.fromString(sb.toString()));
                             saveNicks();
-                            
-                            Minecraft.getMinecraft().addScheduledTask(() -> {
-                                sender.addChatMessage(new ChatComponentText("\u00A7aSuccess! Nick " + fakeName + " is now linked to " + realName));
-                            });
+                            Minecraft.getMinecraft().addScheduledTask(() -> sender.addChatMessage(new ChatComponentText("\u00A7aSuccess! Linked " + fakeName + " to " + realName)));
                         } else {
-                            Minecraft.getMinecraft().addScheduledTask(() -> {
-                                sender.addChatMessage(new ChatComponentText("\u00A7cCould not find real player: " + realName));
-                            });
+                            Minecraft.getMinecraft().addScheduledTask(() -> sender.addChatMessage(new ChatComponentText("\u00A7cCould not find real player: " + realName)));
                         }
                     } catch(Exception e) {
-                        Minecraft.getMinecraft().addScheduledTask(() -> {
-                            sender.addChatMessage(new ChatComponentText("\u00A7cError mapping nick via Mojang API."));
-                        });
+                        Minecraft.getMinecraft().addScheduledTask(() -> sender.addChatMessage(new ChatComponentText("\u00A7cError mapping nick.")));
                     }
                 });
                 return;
             }
-            
             if (args.length >= 1 && args[0].equalsIgnoreCase("toggle")) {
                 isModEnabled = !isModEnabled;
-                String state = isModEnabled ? "\u00A7aENABLED" : "\u00A7cDISABLED";
-                sender.addChatMessage(new ChatComponentText("\u00A7eTabMod is now " + state));
+                sender.addChatMessage(new ChatComponentText("\u00A7eTabMod is now " + (isModEnabled ? "\u00A7aENABLED" : "\u00A7cDISABLED")));
                 return;
             }
-
             if (args.length >= 1 && args[0].equalsIgnoreCase("config")) {
-                Minecraft.getMinecraft().addScheduledTask(() -> {
-                    Minecraft.getMinecraft().displayGuiScreen(new GuiConfig());
-                });
+                Minecraft.getMinecraft().addScheduledTask(() -> Minecraft.getMinecraft().displayGuiScreen(new GuiConfig()));
                 return;
             }
-
             if (args.length == 0 || args[0].equalsIgnoreCase("run")) {
                 if (apiKey.isEmpty()) {
                     sender.addChatMessage(new ChatComponentText("\u00A7cNo API key set. Use /wlr key <key>"));
                     return;
                 }
-                if (!isModEnabled) {
-                    sender.addChatMessage(new ChatComponentText("\u00A7cMod is currently disabled. Use /wlr toggle first."));
-                    return;
-                }
-                sender.addChatMessage(new ChatComponentText("\u00A7aQueueing stats for current tab list..."));
+                if (!isModEnabled) return;
+                sender.addChatMessage(new ChatComponentText("\u00A7aQueueing stats..."));
                 queueCurrentTabList();
                 return;
             }
-
-            sender.addChatMessage(new ChatComponentText("\u00A7cUsage: /wlr | /wlr toggle | /wlr key <key> | /wlr nick <fake> <real> | /wlr config"));
         }
     }
 }
