@@ -40,10 +40,14 @@ public class ExampleMod {
     private static File keyFile;
     private static File cacheFile;
     private static File nicksFile;
+    private static File thresholdFile;
 
     private static String currentGame = null;
     private static long lastGameCheck = 0;
     private static int fetchCountSinceSave = 0;
+
+    // Threshold configurations (Game name -> [Sweat Threshold, Extreme Threshold])
+    public static final Map<String, double[]> thresholds = new ConcurrentHashMap<>();
 
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
@@ -55,11 +59,27 @@ public class ExampleMod {
         keyFile = new File(configDir, "tabmod_key.txt");
         cacheFile = new File(configDir, "tabmod_cache.json");
         nicksFile = new File(configDir, "tabmod_nicks.json");
+        thresholdFile = new File(configDir, "tabmod_thresholds.json");
         
+        initDefaultThresholds();
         loadApiKey();
         loadCache();
         loadNicks();
+        loadThresholds();
         startBackgroundWorker();
+    }
+
+    private void initDefaultThresholds() {
+        thresholds.put("HungerGames", new double[]{0.8, 1.6});
+        thresholds.put("Bedwars", new double[]{0.8, 1.6});
+        thresholds.put("SkyWars", new double[]{0.8, 1.6});
+        thresholds.put("BuildBattle", new double[]{0.8, 1.6});
+        thresholds.put("MCGO", new double[]{0.8, 1.6});
+        thresholds.put("UHC", new double[]{0.8, 1.6});
+        thresholds.put("Battleground", new double[]{1.5, 2.0});
+        thresholds.put("Walls", new double[]{0.8, 1.6});
+        thresholds.put("Quake", new double[]{0.8, 1.6});
+        thresholds.put("Arena", new double[]{0.8, 1.6});
     }
 
     private void startBackgroundWorker() {
@@ -156,18 +176,14 @@ public class ExampleMod {
 
             if (conn.getResponseCode() == 200) {
                 BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                StringBuilder response = new StringBuilder();
-                String line;
-                while ((line = in.readLine()) != null) response.append(line);
+                JsonObject json = new JsonParser().parse(in).getAsJsonObject();
                 in.close();
 
-                JsonObject json = new JsonParser().parse(response.toString()).getAsJsonObject();
                 if (json.has("success") && json.get("success").getAsBoolean() && json.has("player") && !json.get("player").isJsonNull()) {
                     JsonObject playerObj = json.getAsJsonObject("player");
                     JsonObject stats = playerObj.has("stats") ? playerObj.getAsJsonObject("stats") : new JsonObject();
                     Map<String, String> playerStats = new ConcurrentHashMap<>();
 
-                    // Parse all games. The parser will assign [---] if they lack stats, preventing infinite retries.
                     parseGameStat(stats, playerStats, "HungerGames", "wins", "deaths");
                     parseGameStat(stats, playerStats, "Bedwars", "wins_bedwars", "losses_bedwars");
                     parseGameStat(stats, playerStats, "SkyWars", "wins", "losses");
@@ -181,10 +197,10 @@ public class ExampleMod {
 
                     wlrCache.put(uuid, playerStats);
                 } else {
-                    failedCache.add(uuid); // Nicked or wiped
+                    failedCache.add(uuid);
                 }
             } else if (conn.getResponseCode() == 429) {
-                fetchQueue.add(uuid); // Re-queue if rate limited
+                fetchQueue.add(uuid);
                 Thread.sleep(5000); 
             } else {
                 failedCache.add(uuid);
@@ -214,34 +230,23 @@ public class ExampleMod {
         if (wins >= 10) {
             double wlr = (losses == 0) ? wins : (double) wins / losses;
             
-            // BRACKET COLOR (Experience / Total Wins)
-            String bColor = "\u00A78"; // Dark Grey (<100)
-            if (wins >= 5000) bColor = "\u00A74";      // Dark Red
-            else if (wins >= 2500) bColor = "\u00A7c"; // Red
-            else if (wins >= 1000) bColor = "\u00A76"; // Gold
-            else if (wins >= 500) bColor = "\u00A7e";  // Yellow
-            else if (wins >= 100) bColor = "\u00A77";  // Light Grey
+            String bColor = "\u00A78"; 
+            if (wins >= 5000) bColor = "\u00A74";      
+            else if (wins >= 2500) bColor = "\u00A7c"; 
+            else if (wins >= 1000) bColor = "\u00A76"; 
+            else if (wins >= 500) bColor = "\u00A7e";  
+            else if (wins >= 100) bColor = "\u00A77";  
 
-            // NUMBER COLOR (Skill / WLR)
+            double[] limits = thresholds.getOrDefault(game, new double[]{0.8, 1.6});
             String nColor = "\u00A77"; 
-            if (game.equals("Battleground")) {
-                // Specific Warlords Rules
-                if (wlr >= 2.0) nColor = "\u00A74";      // Extreme
-                else if (wlr >= 1.5) nColor = "\u00A7c"; // Sweat
-                else if (wlr >= 1.25) nColor = "\u00A76"; // Good
-                else if (wlr >= 0.95) nColor = "\u00A7e"; // Decent
-            } else {
-                // Standard Rules
-                if (wlr >= 1.6) nColor = "\u00A74";      
-                else if (wlr >= 0.8) nColor = "\u00A7c"; 
-                else if (wlr >= 0.5) nColor = "\u00A76"; 
-                else if (wlr >= 0.33) nColor = "\u00A7e"; 
-            }
+            if (wlr >= limits[1]) nColor = "\u00A74";       
+            else if (wlr >= limits[0]) nColor = "\u00A7c";  
+            else if (wlr >= limits[0] * 0.8) nColor = "\u00A76"; 
+            else if (wlr >= limits[0] * 0.5) nColor = "\u00A7e"; 
 
             String formattedWlr = String.format(Locale.UK, "%.2f", wlr);
             playerStats.put(game, bColor + "[" + nColor + formattedWlr + bColor + "]\u00A7f");
         } else {
-            // Under 10 wins. Stored in cache to prevent endless API re-checks.
             playerStats.put(game, "\u00A78[---]\u00A7f");
         }
     }
@@ -290,74 +295,23 @@ public class ExampleMod {
         } catch (IOException e) { }
     }
 
+    public static synchronized void saveThresholds() {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(thresholdFile))) {
+            new Gson().toJson(thresholds, writer);
+        } catch (IOException e) { }
+    }
+
+    private static void loadThresholds() {
+        if (!thresholdFile.exists()) return;
+        try (BufferedReader reader = new BufferedReader(new FileReader(thresholdFile))) {
+            Map<String, double[]> loaded = new Gson().fromJson(reader, new TypeToken<Map<String, double[]>>(){}.getType());
+            if (loaded != null) thresholds.putAll(loaded);
+        } catch (IOException e) { }
+    }
+
     private static class CommandWLR extends CommandBase {
         @Override
         public String getCommandName() { return "wlr"; }
         
         @Override
-        public String getCommandUsage(ICommandSender sender) { return "/wlr | /wlr toggle | /wlr key <api_key> | /wlr nick <fake> <real>"; }
-        
-        @Override
-        public int getRequiredPermissionLevel() { return 0; }
-
-        @Override
-        public void processCommand(ICommandSender sender, String[] args) throws CommandException {
-            if (args.length >= 2 && args[0].equalsIgnoreCase("key")) {
-                apiKey = args[1].trim();
-                saveApiKey(apiKey);
-                sender.addChatMessage(new ChatComponentText("\u00A7aHypixel API key saved! TabMod is ready."));
-                return;
-            }
-            
-            if (args.length >= 3 && args[0].equalsIgnoreCase("nick")) {
-                String fakeName = args[1];
-                String realName = args[2];
-                sender.addChatMessage(new ChatComponentText("\u00A7eResolving real UUID for " + realName + "..."));
-                
-                CompletableFuture.runAsync(() -> {
-                    try {
-                        URL url = new URL("https://api.mojang.com/users/profiles/minecraft/" + realName);
-                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                        if (conn.getResponseCode() == 200) {
-                            BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                            JsonObject json = new JsonParser().parse(in.readLine()).getAsJsonObject();
-                            String rawId = json.get("id").getAsString();
-                            UUID realUuid = UUID.fromString(rawId.replaceFirst("(\\p{XDigit}{8})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}+)", "$1-$2-$3-$4-$5"));
-                            nickMap.put(fakeName.toLowerCase(), realUuid);
-                            saveNicks();
-                            sender.addChatMessage(new ChatComponentText("\u00A7aSuccess! Nick " + fakeName + " is now linked to " + realName));
-                        } else {
-                            sender.addChatMessage(new ChatComponentText("\u00A7cCould not find real player: " + realName));
-                        }
-                    } catch(Exception e) {
-                        sender.addChatMessage(new ChatComponentText("\u00A7cError mapping nick via Mojang API."));
-                    }
-                });
-                return;
-            }
-            
-            if (args.length >= 1 && args[0].equalsIgnoreCase("toggle")) {
-                isModEnabled = !isModEnabled;
-                String state = isModEnabled ? "\u00A7aENABLED" : "\u00A7cDISABLED";
-                sender.addChatMessage(new ChatComponentText("\u00A7eTabMod is now " + state));
-                return;
-            }
-
-            if (args.length == 0 || args[0].equalsIgnoreCase("run")) {
-                if (apiKey.isEmpty()) {
-                    sender.addChatMessage(new ChatComponentText("\u00A7cNo API key set. Use /wlr key <key>"));
-                    return;
-                }
-                if (!isModEnabled) {
-                    sender.addChatMessage(new ChatComponentText("\u00A7cMod is currently disabled. Use /wlr toggle first."));
-                    return;
-                }
-                sender.addChatMessage(new ChatComponentText("\u00A7aQueueing stats for current tab list..."));
-                queueCurrentTabList();
-                return;
-            }
-
-            sender.addChatMessage(new ChatComponentText("\u00A7cUsage: /wlr | /wlr toggle | /wlr key <key> | /wlr nick <fake> <real>"));
-        }
-    }
-}
+        public String getCommandUsage(ICommandSender sender) { return "/wlr | /wlr toggle | /wlr key <api_key> | /wlr nick <fake> <real> | /
